@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>unleash your anger</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Plain white page: title, upload button, the image as target, mirrored hand at bottom-left. Deliberately single light look. */
+:root { --bg: #ffffff; --fg: #000000; color-scheme: light; }
+html, body { height: 100%; }
+body { background: var(--bg); color: var(--fg); font-family: Times, "Times New Roman", serif; }
+.wrap {
+  padding-block: 16px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+h1 { margin: 0 0 12px; }
+.range { position: relative; overflow: hidden; display: flex; justify-content: center; align-items: center; padding: 16px 16px 90px; min-height: 320px; margin-top: 12px; }
+.stage { position: relative; line-height: 0; }
+canvas#c { display: block; max-width: 100%; max-height: 68vh; width: auto; height: auto; cursor: crosshair; touch-action: manipulation; }
+.gun {
+  position: absolute; left: 4%; bottom: -14%; width: clamp(140px, 26%, 270px);
+  pointer-events: none; transform-origin: 15% 100%; transition: transform 70ms linear;
+}
+.gun .kick { position: relative; transform-origin: 15% 100%; }
+.gun img { display: block; width: 100%; height: auto; transform: scaleX(-1); }
+.gun.fire .kick { animation: kick 170ms ease-out; }
+@keyframes kick { 0% { transform: translate(0,0) rotate(0) } 25% { transform: translate(-3%, -6%) rotate(-6deg) } 100% { transform: translate(0,0) rotate(0) } }
+.flash {
+  position: absolute; left: 99%; top: 2%; width: 55%; aspect-ratio: 1; transform: translate(-50%, -50%);
+  background: radial-gradient(circle, #fffbe6 0 12%, #ffd36b 25%, rgba(255,150,40,.7) 45%, rgba(255,120,20,0) 70%);
+  border-radius: 50%; opacity: 0;
+}
+.gun.fire .flash { animation: flash 90ms steps(1) forwards; }
+@keyframes flash { 0% { opacity: 1 } 100% { opacity: 0 } }
+.casing { position: absolute; width: 7px; height: 14px; border-radius: 2px; background: linear-gradient(90deg, #8a6a1f, #d1a640, #f3d688, #d1a640); pointer-events: none; animation: eject 650ms cubic-bezier(.2,.6,.4,1) forwards; }
+@keyframes eject {
+  0% { transform: translate(0,0) rotate(0); opacity: 1 }
+  45% { transform: translate(var(--dx), -90px) rotate(-260deg) }
+  100% { transform: translate(calc(var(--dx) * 1.6), 60px) rotate(-560deg); opacity: 0 }
+}
+@media (prefers-reduced-motion: reduce) { .gun.fire .kick, .casing { animation: none; } .casing { display: none; } }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <h1>unleash your anger</h1>
+  <input type="file" id="file" accept="image/*">
+  <section class="range" id="range" aria-label="Target area">
+    <div class="stage">
+      <canvas id="c" aria-label="Your image. Click to shoot."></canvas>
+    </div>
+    <div class="gun" id="gun" aria-hidden="true"><div class="kick"><img src="hand.webp" alt=""><div class="flash"></div></div></div>
+  </section>
+</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const gun = document.getElementById('gun');
+  const range = document.getElementById('range');
+  let base = null, holes = [], audio = null;
+
+  function rng(seed) { let s = seed >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }; }
+
+  function sampleTarget() {
+    const c = document.createElement('canvas'); c.width = 900; c.height = 900;
+    const g = c.getContext('2d');
+    g.fillStyle = '#efe7d3'; g.fillRect(0, 0, 900, 900);
+    for (let i = 10; i >= 1; i--) {
+      g.beginPath(); g.arc(450, 450, i * 40, 0, Math.PI * 2);
+      g.fillStyle = i <= 4 ? '#1a1a1a' : '#efe7d3'; g.fill();
+      g.lineWidth = 2; g.strokeStyle = i <= 4 ? '#efe7d3' : '#1a1a1a'; g.stroke();
+    }
+    g.beginPath(); g.arc(450, 450, 12, 0, Math.PI * 2); g.fillStyle = '#c0392b'; g.fill();
+    return c;
+  }
+
+  function setBase(src) {
+    const w0 = src.naturalWidth || src.width, h0 = src.naturalHeight || src.height;
+    const k = Math.min(1, 2400 / Math.max(w0, h0));
+    canvas.width = Math.round(w0 * k); canvas.height = Math.round(h0 * k);
+    base = src; holes = []; render();
+  }
+  function loadFile(file) {
+    if (!file || !file.type.startsWith('image/')) return;
+    const img = new Image();
+    img.onload = () => setBase(img);
+    img.src = URL.createObjectURL(file);
+  }
+  document.getElementById('file').addEventListener('change', e => loadFile(e.target.files[0]));
+  window.addEventListener('dragover', e => e.preventDefault());
+  window.addEventListener('drop', e => { e.preventDefault(); loadFile(e.dataTransfer.files[0]); });
+  window.addEventListener('paste', e => {
+    for (const it of e.clipboardData.items) if (it.type.startsWith('image/')) { loadFile(it.getAsFile()); break; }
+  });
+
+  function drawHole(g, h) {
+    const R = rng(h.seed), r = h.r;
+    g.save(); g.translate(h.x, h.y);
+    let grd = g.createRadialGradient(0, 0, r * 0.6, 0, 0, r * 2.6);
+    grd.addColorStop(0, 'rgba(25,18,12,0.55)'); grd.addColorStop(1, 'rgba(25,18,12,0)');
+    g.fillStyle = grd; g.beginPath(); g.arc(0, 0, r * 2.6, 0, Math.PI * 2); g.fill();
+    const n = 6 + Math.floor(R() * 6);
+    for (let i = 0; i < n; i++) {
+      let a = R() * Math.PI * 2, len = r * (1.6 + R() * 2.8), d = r * 0.9;
+      g.beginPath(); g.moveTo(Math.cos(a) * d, Math.sin(a) * d);
+      while (d < len) { d += r * (0.35 + R() * 0.5); a += (R() - 0.5) * 0.35; g.lineTo(Math.cos(a) * d, Math.sin(a) * d); }
+      g.lineWidth = Math.max(0.8, r * 0.09); g.strokeStyle = 'rgba(10,8,6,0.55)'; g.stroke();
+      g.translate(0.8, 0.8); g.lineWidth = Math.max(0.5, r * 0.05); g.strokeStyle = 'rgba(255,250,240,0.25)'; g.stroke(); g.translate(-0.8, -0.8);
+    }
+    const pts = 14;
+    g.beginPath();
+    for (let i = 0; i <= pts; i++) { const a = i / pts * Math.PI * 2, rr = r * (1.15 + R() * 0.35); i ? g.lineTo(Math.cos(a) * rr, Math.sin(a) * rr) : g.moveTo(Math.cos(a) * rr, Math.sin(a) * rr); }
+    g.fillStyle = 'rgba(210,200,182,0.55)'; g.fill();
+    g.beginPath();
+    for (let i = 0; i <= pts; i++) { const a = i / pts * Math.PI * 2, rr = r * (0.85 + R() * 0.25); i ? g.lineTo(Math.cos(a) * rr, Math.sin(a) * rr) : g.moveTo(Math.cos(a) * rr, Math.sin(a) * rr); }
+    grd = g.createRadialGradient(-r * 0.2, -r * 0.2, 0, 0, 0, r * 1.1);
+    grd.addColorStop(0, '#000'); grd.addColorStop(0.7, '#0b0907'); grd.addColorStop(1, '#3a3128');
+    g.fillStyle = grd; g.fill();
+    g.lineWidth = Math.max(1, r * 0.12); g.strokeStyle = 'rgba(0,0,0,0.7)'; g.stroke();
+    g.restore();
+  }
+  function render() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(base, 0, 0, canvas.width, canvas.height);
+    holes.forEach(h => drawHole(ctx, h));
+  }
+
+  function bang() {
+    try {
+      audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+      if (audio.state === 'suspended') audio.resume();
+      const t = audio.currentTime, sr = audio.sampleRate;
+      const comp = audio.createDynamicsCompressor(); comp.threshold.value = -18; comp.ratio.value = 8; comp.connect(audio.destination);
+      const len = Math.floor(sr * 0.6), buf = audio.createBuffer(1, len, sr), d = buf.getChannelData(0);
+      for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3.5);
+      const src = audio.createBufferSource(); src.buffer = buf;
+      const lp = audio.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.setValueAtTime(9000, t); lp.frequency.exponentialRampToValueAtTime(400, t + 0.35);
+      const ng = audio.createGain(); ng.gain.setValueAtTime(1.6, t); ng.gain.exponentialRampToValueAtTime(0.001, t + 0.55);
+      src.connect(lp).connect(ng).connect(comp); src.start(t);
+      const o = audio.createOscillator(); o.type = 'sine';
+      o.frequency.setValueAtTime(150, t); o.frequency.exponentialRampToValueAtTime(38, t + 0.18);
+      const og = audio.createGain(); og.gain.setValueAtTime(1.4, t); og.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+      o.connect(og).connect(comp); o.start(t); o.stop(t + 0.25);
+    } catch (e) { /* audio unavailable */ }
+  }
+
+  // Mirrored hand: muzzle at its top-right. Slide toward the cursor and tilt a little.
+  function aim(clientX, clientY) {
+    const rr = range.getBoundingClientRect();
+    const muzzleX = rr.left + gun.offsetLeft + gun.offsetWidth * 0.97;
+    const fx = (clientX - rr.left) / rr.width, fy = (clientY - rr.top) / rr.height;
+    const maxShift = rr.width - gun.offsetLeft - gun.offsetWidth;
+    const tx = Math.min(maxShift, Math.max(-gun.offsetWidth * 0.15, (clientX - muzzleX) * 0.85));
+    const ty = Math.max(-12, Math.min(14, (fy - 0.5) * 30));
+    const rot = (fx - 0.4) * 14;
+    gun.style.transform = `translate(${tx}px, ${ty}%) rotate(${rot}deg)`;
+  }
+  range.addEventListener('pointermove', e => aim(e.clientX, e.clientY));
+
+  function ejectCasing() {
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const el = document.createElement('div'); el.className = 'casing';
+    const gb = gun.getBoundingClientRect(), rr = range.getBoundingClientRect();
+    el.style.left = (gb.left - rr.left + gb.width * 0.7) + 'px';
+    el.style.top = (gb.top - rr.top + gb.height * 0.06) + 'px';
+    el.style.setProperty('--dx', -(30 + Math.random() * 40) + 'px');
+    range.appendChild(el); setTimeout(() => el.remove(), 700);
+  }
+
+  canvas.addEventListener('pointerdown', e => {
+    const b = canvas.getBoundingClientRect();
+    const x = (e.clientX - b.left) * canvas.width / b.width;
+    const y = (e.clientY - b.top) * canvas.height / b.height;
+    const r = Math.max(6, Math.min(canvas.width, canvas.height) * 0.017) * (0.85 + Math.random() * 0.3);
+    aim(e.clientX, e.clientY);
+    holes.push({ x, y, r, seed: (Math.random() * 1e9) | 0 });
+    render(); bang(); ejectCasing();
+    gun.classList.remove('fire'); void gun.getBoundingClientRect(); gun.classList.add('fire');
+  });
+  window.addEventListener('keydown', e => { if ((e.key === 'z' || e.key === 'Z') && !e.metaKey && !e.ctrlKey) { holes.pop(); render(); } });
+
+  setBase(sampleTarget());
+})();
+</script>
+</body>
+</html>
