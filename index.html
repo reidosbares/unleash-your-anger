@@ -9,6 +9,7 @@
 /* Plain white page: title, upload button, the image as target, mirrored hand at bottom-left. Deliberately single light look. */
 :root { --bg: #ffffff; --fg: #000000; color-scheme: light; }
 html, body { height: 100%; }
+* { touch-action: manipulation; } /* no double-tap zoom */
 body { background: var(--bg); color: var(--fg); font-family: Times, "Times New Roman", serif; }
 .wrap {
   padding-block: 16px;
@@ -130,10 +131,34 @@ canvas#c { display: block; max-width: 100%; max-height: 68vh; width: auto; heigh
     holes.forEach(h => drawHole(ctx, h));
   }
 
+  // Mobile browsers only start audio from a tap's touchend/click, and iOS mutes Web Audio
+  // in silent mode unless the audio session is set to playback.
+  function getAudio() {
+    if (!audio) {
+      try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}
+      audio = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    return audio;
+  }
+  function unlock() {
+    try {
+      const a = getAudio();
+      if (a.state !== 'running') a.resume();
+      const s = a.createBufferSource(); s.buffer = a.createBuffer(1, 1, 22050); s.connect(a.destination); s.start(0);
+      if (a.state === 'running') ['touchend', 'click', 'keydown'].forEach(t => window.removeEventListener(t, unlock));
+    } catch (e) {}
+  }
+  ['touchend', 'click', 'keydown'].forEach(t => window.addEventListener(t, unlock, { passive: true }));
+
   function bang() {
     try {
-      audio = audio || new (window.AudioContext || window.webkitAudioContext)();
-      if (audio.state === 'suspended') audio.resume();
+      const a = getAudio();
+      if (a.state !== 'running') { a.resume().then(playShot).catch(() => {}); return; }
+      playShot();
+    } catch (e) { /* audio unavailable */ }
+  }
+  function playShot() {
+    try {
       const t = audio.currentTime, sr = audio.sampleRate;
       const comp = audio.createDynamicsCompressor(); comp.threshold.value = -18; comp.ratio.value = 8; comp.connect(audio.destination);
       const len = Math.floor(sr * 0.6), buf = audio.createBuffer(1, len, sr), d = buf.getChannelData(0);
